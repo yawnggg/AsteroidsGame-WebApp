@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Asteroids</title>
+    <style></style>
+</head>
+
+<body>
+    <canvas id="gameCanvas" width="700" height="500"></canvas>
+<script>
+    const FPS = 30; // 30 frames per second
+    const FRICTION = 0.7;   // friction coefficient of space (0 = no friction, 1 = lots of friction)
+    const SAVE_KEY_SCORE = "highscore"; // save key for local storage for the high score
+    const GAME_LIVES = 3;   // starting number of lives for the player
+    const LASER_MAX = 10;   // max number of lasers on the screen at once
+    const LASER_SPEED = 500;    // speed of lasers (in pixels per second)
+    const LASER_DISTANCE = 0.6; // max distance that the laser can travel (as a fraction of the screen width)
+    const LASER_EXPLODE_DURATION = 0.1;  // duration of the laser's explosion (in seconds)
+    const SHIP_EXPLODE_DURATION = 0.3;  // duration of the ship's explosion (in seconds)
+    const SHIP_INVULNERABILITY_DURATION = 3;    // duration of the ship's invulnerability (in seconds)
+    const SHIP_BLINK_DURATION = 0.1;    // duration of each of the ship's blinks during invulnerability (in seconds)
+    const SHIP_SIZE = 30;   // ship height in pixels
+    const SHIP_THRUST = 5;  // acceleration of the ship in pixels per second per second
+    const SHIP_TURN_SPEED = 360; // turn speed in degree per second
+    const ROIDS_POINTS_LARGE = 20;  // points scored for a large asteroid
+    const ROIDS_POINTS_MEDIUM = 50; // points scored for a medium asteroid
+    const ROIDS_POINTS_SMALL = 100; // points scored for a small asteroid
+    const ROIDS_JAG = 0.4;  // jaggedness of the asteroids (0 = none, 1 = lots)
+    const ROIDS_NUM = 1;    // starting number of asteroids (will be increased as difficulty in level increases)
+    const ROIDS_SIZE = 100; // starting size of asteroids in pixels
+    const ROIDS_SPD = 50;   // maximum starting speed of asteroid in pixels per second
+    const ROIDS_VERT = 10;  // average number of vertices for each asteroid (controlling the sides)
+    const SHOW_CENTER_DOT = false;  // showing or hiding the ship's center dot
+    const SHOW_BOUNDING = false; // showing or hiding collision bounding
+    const SOUND_EFFECTS_ON = true; // controls whether or not the sound for the game is ON or OFF
+    const MUSIC_ON = true; // controls whether or not the music for the game is ON or OFF
+    const TEXT_FADE_TIME = 2.5; // text fade time (in seconds)
+    const TEXT_SIZE = 40;  // text font height (in pixels)
+
+    // TODO - this is my problem: upon starting the game (after I refresh the page), i cannot hear the music until i first click a key. i need to fix this
+
+    / @type {HTMLCanvasElement} */   // to recognize as a canvas element
+    var canv = document.getElementById("gameCanvas");
+    var ctx = canv.getContext("2d");    // getting the context from the canvas as type 2d
+
+    // used during development before the newShip() method below was created. creating a "ship" javascript object.
+    // var ship = {   
+    //     x: canv.width / 2,  // starting in the center
+    //     y: canv.height / 2, // starting in the center
+    //     r: SHIP_SIZE / 2,   // radius
+    //     a: 90 / 180 * Math.PI, // direction of the ship/where it is facing (angle). We want 90 degrees so that our ship faces upwards (90 degrees is pointing up on unit circle). We divide 90 by 180 and multiply by Pi to get this 90 degree in radians.
+    //     explodeTime: 0, // the duration of the explosion effect for the ship which is initially set to 0 (which means there are 0 frames left of exploding effect)
+    //     rot: 0, // ship rotation (initially 0)
+    //     thrusting: false,
+    //     thrust: {   // thrust magnitude which allows the ship to continue in the same direction (even if we rotate) for some time after releasing the thrust key
+    //         x: 0,
+    //         y: 0 
+    //     }
+    // }
+
+    // set up the game sound effects
+    var fxLaser = new Sound("sounds/laser.m4a", 5, 0.3);    // setting up the laser sound effect audio, with 5 audio steams (because the player will be firing the lasers in quick succession), and volume at 0.3
+    var fxExplode = new Sound("sounds/explode.m4a", 1, 0.6);    // setting up the explode sound effect audio with 1 audio stream, and volume at 0.6
+    var fxHit = new Sound("sounds/hit.m4a", 5, 0.5)   // setting up the hit sound effect audio with 5 audio streams (because many asteroids could be hit at the same time/in quick succession), and volume at 0.5
+    var fxThrust = new Sound("sounds/thrust.m4a");  // setting up the thruster sound effect audio
+
+    // set up the music
+    var music = new Music("sounds/music-low.m4a", "sounds/music-high.m4a"); // creates a new instance of the Music object and initializes it with two sound files, one for the low beat and one for the high beat
+    var roidsLeft, roidsTotal;  // variables used to find a ratio of how many roids are left compared to the total number of roids to use as a guide for speeding up the tempo of the music as each level of the game progresses (at each start of a new level, the tempo of the music resets)
+
+    // set up the game parameters
+    var level, lives, roids, ship, text, textAlpha, currentScore, highScore;    // textAlpha is the transparency component of the text (that allows the text to fade out)
+    newGame();
+
+    // set up event handlers
+    document.addEventListener("keydown", keyDown)   // using type "keydown" to detect when a key is pushed on the keyboard
+    document.addEventListener("keyup", keyUp)   // using type "keyup" to detect when a key that has been pushed has come up (has been released)
+
+    document.addEventListener("keydown", function (evt) {   // when "r" is clicked, the high score is reset to 0
+        if (evt.key === "r" || evt.key === "R") { 
+            resetHighScore();
+            alert("High score reset!");
+        }
+    }); 
+
+    // set up the game loop to achieve our animation
+    setInterval(update, 1000 / FPS);
+
+    function resetHighScore() {
+        localStorage.removeItem(SAVE_KEY_SCORE); // Remove high score from local storage
+        highScore = 0; // Reset the high score variable
+    }
+
+    // defining the function to create the asteroids
+    function createAsteroidBelt() {
+        roids = []; // clearing the roids array (because it may be populated during game)
+        roidsTotal = (ROIDS_NUM + level) * 7;   // initializing the "roidsTotal" to be the number of roids plus the level (since the number of roids is dependent on the level number, i.e level 1 has 1 roid, level 2 has 2 roids, and so on), multiplied by 7 (because 1 large asteroid contains 2 medium asteroids which contain 4 small asteroids, which equals 7 asteroids in total for each large asteroid)
+        roidsLeft = roidsTotal; // setting the number of asteroids left equal to the total number of roids at the start of each level
+        var x, y;
+        for (var i = 0; i < ROIDS_NUM + level; i++) {   // looping over the number of asteroids we are creating. adding "level" (which starts at 0) to ROIDS_NUM so that 1 asteroid is added in the for loop for each new level
+            do {    // do-while ensures that each asteroid is generated a safe distance away from the ship (so the asteroids do not spawn on the ship)
+                x = Math.floor(Math.random() * canv.width); // rounding down random x position on screen
+                y = Math.floor(Math.random() * canv.height);    // rounding down random y position on screen
+            } while (distBetweenPoints(ship.x, ship.y, x, y) < ROIDS_SIZE * 2 + ship.r);    // after generating a random position for the asteroid, the while condition checks whether the distance between the asteroids position (x, y) and the ship's position (ship.x, ship.y) is less than a safe threshold. ROIDS_SIZE * 2 + ship.r is the minimum safe distance between the asteroid and the ship. This ensures that no asteroid spawns too close to the ship. Thus, if the condition is true (the asteroid is too close to the ship), the loop runs again, assigning new random positions for the asteroid until a safe distance is found. Only then is the new asteroid added to the game
+            roids.push(newAsteroid(x, y, Math.ceil(ROIDS_SIZE / 2)));  // adding element (asteroid) to our array using "newAsteroid" function
+        }
+    }
+
+    function destroyAsteroid(index) {
+        var x = roids[index].x;
+        var y = roids[index].y;
+        var r = roids[index].r;
+
+        // split the asteroid into two (if necessary)
+        if (r == Math.ceil(ROIDS_SIZE / 2)) {   // if the radius of the asteroid is Math.ceil(ROIDS_SIZE / 2) (which is the largest/starting size of the asteroid)...
+            roids.push(newAsteroid(x, y, Math.ceil(ROIDS_SIZE / 4)));   // ...split the asteroid into two. we do this by adding an element (the split asteroid) to our roids array at the x and y coordinate positions with a size that is half the size of the starting size of the asteroid (Math.ceil(ROIDS_SIZE / 4)). call this new size of asteroid the "medium size"
+            roids.push(newAsteroid(x, y, Math.ceil(ROIDS_SIZE / 4)));   // call this line again to add another element (the other half of the split asteroid) to the roids array
+            currentScore += ROIDS_POINTS_LARGE; // adding the score for a large asteroid to the current score when the large asteroid is destroyed
+        } else if (r == Math.ceil(ROIDS_SIZE / 4)) {    // if the radius of the asteroid is Math.ceil(ROIDS_SIZE / 4) (which is the "medium size" of the asteroid that is produced when the starting size is split into two)...
+            roids.push(newAsteroid(x, y, Math.ceil(ROIDS_SIZE / 8)));   // ...split the medium sized asteroid into two (so the size of this asteroid, the smallest asteroid, is half the size of the medium asteroid)
+            roids.push(newAsteroid(x, y, Math.ceil(ROIDS_SIZE / 8)));   // other half of the small asteroid
+            currentScore += ROIDS_POINTS_MEDIUM;    // adding the score for a medium asteroid to the current score when the medium asteroid is destroyed
+        } else {    // if the asteroid is not a large or medium asteroid (it is a small asteroid)...
+            currentScore += ROIDS_POINTS_SMALL; // add the score for a small asteroid to the current score when the small asteroid is destroyed
+        }
+        // check high score
+        if (currentScore > highScore) { // if the player achieves a score that is greater than the current high score
+            highScore = currentScore;   // update the high score so that it is now the score that the player achieved
+            localStorage.setItem(SAVE_KEY_SCORE, highScore);    // save the high score value to the browser's local storage using the SAVE_KEY_SCORE as the key (this allows the high score to persist between browser sessions, games, etc.)
+        }
+
+        // destroy the asteroid (the original asteroid that has been split)
+        roids.splice(index, 1);
+        fxHit.play();   // play the hit sound effect when an asteroid is hit/destroyed
+
+        // calculate the ratio of remaining asteroids in order to determine music tempo (which progressively gets faster as each game level progresses, and then resets when a new level starts)
+        roidsLeft--;    // decrement the amount of roids left in the level each time an asteroid is destroyed
+        music.setAsteroidRatio(roidsLeft == 0 ? 1 : roidsLeft / roidsTotal);    // call the setAsteroidRatio() method on the music object to determine the ratio of remaining asteroids compared to the total asteroids in the level. If no asteroids are left (roidsLeft == 0), set the ratio to 1 (the slowest/starting tempo). Otherwise, calculate the ratio as "roidsLeft/roidsTotal". This is the ratio that will control the music tempo, increasing the tempo as fewer asteroids remain, making the game feel more intense as each level progresses.
+
+        // add a new level when there are no more asteroids in the current level
+        if (roids.length == 0) {    // if the roids array has no more asteroids (which means all of the asteroids have been destroyed and the player has completed the level)...
+            level++;    // ...increment the level
+            newLevel(); // ...and call a new level
+        }
+    }
+
+    // this function calculates the distance between two points by calculating the squared difference in the x-coordinates and y-coordinates, and then taking the square root of the sum of those squared differences
+    function distBetweenPoints(x1, y1, x2, y2) {
+        return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+    }
+
+    // function used to draw the ship with the x location of the ship, the y location of the ship, the angle of the ship, and the color of the ship (with the default color set to white). we set the default to white so that if we do not provide a color in one of the function calls, it will automatically assign the color of the ship to white
+    function drawShip(x, y, a, color = "white") {
+        ctx.strokeStyle = color;  // making the outline of the ship white
+        ctx.lineWidth = SHIP_SIZE / 20; // width of the outline of the ship
+        ctx.beginPath();
+        ctx.moveTo( // move cursor to the tip of the ship
+            x + (4 / 3) * ship.r * Math.cos(a), // horizontal of the ship's angle (cos). Multiplying by 4/3 because the centroid of a triangle is 2/3 from the tip. 
+            y - (4 / 3) * ship.r * Math.sin(a)  // vertical of the ship's angle (cos). Multiplying by 4/3 because the centroid of a triangle is 2/3 from the tip. 
+        );
+        ctx.lineTo( // draw line down to rear left of the ship.
+            x - ship.r * (2 / 3 * Math.cos(a) + Math.sin(a)), // horizontal of the ship's angle (cos). Multiplying by 2/3 to shift the triangle up, so the its centroid is accurately placed in the center of the triangle ship.
+            y + ship.r * (2 / 3 * Math.sin(a) - Math.cos(a))  // vertical of the ship's angle (cos). Again multiplying by 2/3...
+        );
+        ctx.lineTo( // draw line to rear right of the ship.
+            x - ship.r * (2 / 3 * Math.cos(a) - Math.sin(a)), // horizontal of the ship's angle (cos). Again multiplying by 2/3...
+            y + ship.r * (2 / 3 * Math.sin(a) + Math.cos(a))  // vertical of the ship's angle (cos). Again multiplying by 2/3...
+        );
+        ctx.closePath();    // draw line from rear right of ship back to the tip of the ship to close the triangle
+        ctx.stroke();
+    }
+
+    // this was a testing function used during development to test if our collision detection is working. it fills the circle boundary of the ship with a "lime" color to represent the ship exploding when its boundaries meet the boundaries of an asteroid. when the ship and asteroid come apart again, the circle boundary of the ship unfills again so that it has no color filled in. it was called when checking for asteroid and ship collisions in the for loop below (that calls explodeShip())
+    // function explodeShip() {
+    //     ctx.fillStyle = "lime"; // specifies the color that will fill the inside of the circle
+    //     ctx.strokeStyle = "lime";   // specifies the color of the (circle's) outline bounds
+    //     ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+    //     ctx.arc(ship.x, ship.y, ship.r, 0, Math.PI * 2, false); // creates a complete circle around the ship using the ship's coordinates (ship.x and ship.y), the radius of the ship (ship.r) that defines how large the circle will be, the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+    //     ctx.fill(); // this effectively fills the inside of the circle (at the ship's position)
+    //     ctx.stroke();   // this effectively draws the outline of the circle at the ship's position (it actually draws the current path to the canvas using the previous line which defines the path of the circle)
+    // }
+
+    // this function sets up the ship to enter an explosion state. when called, it initiates the explosion sequence for the "ship" object and sets a timer for how long the explosion should last (based on the frame count)
+    function explodeShip() {
+        ship.explodeTime = Math.ceil(SHIP_EXPLODE_DURATION * FPS);  // ship.explodeTime is assigned a value calculated by the duration of the ship explosion (which is 0.3) multiplied by frames per second (set to 30), and rounded up to the next nearest integer (using Math.ceil)
+        fxExplode.play();   // play the explode sound effect when the ship explodes
+    }
+
+    // this function handles the game over functionality (when the player has lost all of their lives)
+    function gameOver() {
+        ship.dead = true;   // setting the ship's dead property to true
+        text = "Game Over"; // printing the text "Game Over" to the screen when the game ends
+        textAlpha = 1.0;    // setting the text to completely opaque
+
+        // TODO - code added without video tutorial
+        // reset the music to start over
+        music.beatTime = 0; // reset the beat time to 0
+        music.tempo = 1.0;  // reset the music tempo to its slowest (initial) setting
+        music.low = true;   // set the next beat to start with the low beat sound
+    }
+
+    function keyDown(/** @type {KeyBoardEvent} */ evt) { // using JSDoc comment to show that the evt variable is of type "KeyBoardEvent". A "KeyBoardEvent" is an event triggered when a key is pressed or released.
+
+        if (ship.dead) {    // if the ship is dead (which means the game is over)...
+            return; // we return so that the code below cannot be accessed (and the player cannot continue to move the ship around using the keys)
+        }
+
+        switch(evt.keyCode) {   // detects the code of the key that is pressed
+            case 32:    // space bar which will shoot the laser
+                shootLaser();
+                break;
+            case 37:    // left arrow key which will rotate the ship left
+                ship.rot = SHIP_TURN_SPEED / 180 * Math.PI / FPS;    // divide by 180 and multiply by Pi to convert from degrees to radians. Also, divide by FPS to get the "per frames" speed.
+                break;
+            case 38:    // up arrow key which will thrust the ship forward
+                ship.thrusting = true;
+                break;
+            case 39:    // right arrow key which will rotate the ship right
+                ship.rot = -SHIP_TURN_SPEED / 180 * Math.PI / FPS;
+                break;
+        }
+    }
+
+    function keyUp(/** @type {KeyBoardEvent} */ evt) {  // using JSDoc comment to show that the evt variable is of type "KeyBoardEvent". A "KeyBoardEvent" is an event triggered when a key is pressed or released.
+
+        if (ship.dead) {    // if the ship is dead (which means the game is over)...
+            return; // we return so that the code below cannot be accessed (and the player cannot continue to move the ship around using the keys)
+        }
+        
+        switch(evt.keyCode) {   // detects the code of the key that is pressed
+            case 32:    // when space bar is released, allow shooting again
+                ship.canShoot = true;
+                break;
+            case 37:    // when left arrow key is released, stop rotating the ship left
+                ship.rot = 0;   // divide by 180 and multiply by Pi to convert from degrees to radians. Also, divide by FPS to get the "per frames" speed.
+                break;
+            case 38:    // when up arrow key is released, stop thrusting ship forward
+                ship.thrusting = false;
+                break;
+            case 39:    // when right arrow key is released, stop rotating the ship right
+                ship.rot = 0;
+                break;
+        }
+    }
+
+    // function used to add asteroid to roids array
+    function newAsteroid(x, y, r) {    // passing x and y coordinates so that we know the exact location of the asteroid for later in the game
+        var levelMultiplier = 1 + 0.1 * level;  // as the level increases, this multiplier will increase incrementally to make the asteroids move around more quickly each time (so that the game becomes more difficult as the level increases)
+        var roid = {
+            x: x,   // for each new asteroid we need an x and y coordinate
+            y: y,
+            xv: Math.random() * ROIDS_SPD * levelMultiplier / FPS * (Math.random() < 0.5 ? 1 : -1),   // x velocity is made up of some random velocity magnitude multiplied by a constant speed for the asteroids multiplied by the "level multiplier" (divided by frames per second). Also, we need a random direction. If the random number generated (between 0 and 1) is less than 0.5, it will go in a positive direction, else it will go in a negative direction
+            yv: Math.random() * ROIDS_SPD * levelMultiplier / FPS * (Math.random() < 0.5 ? 1 : -1),   // same for y velocity
+            r: r,  // radius of each asteroid (which will change as the asteroids are shot and turn into smaller asteroids) based on "ROIDS_SIZE"
+            a: Math.random() * Math.PI * 2, // random angle (in radians)
+            vert: Math.floor(Math.random() * (ROIDS_VERT + 1) + ROIDS_VERT / 2), // getting random number of sides on asteroids by taking a random number between 1 and 0 and multiplying by a constant "ROIDS_VERT". We add "ROIDS_VERT / 2" to basically add 5 sides. Since ROIDS_VERT is 10, this will give us a number between 5 and 15 centered around ROIDS_VERT. Also, we use Math.floor to get an integer (because we do not want a decimal value for the number of sides)
+            offs: []    // empty offset array for asteroid jaggedness
+        };
+
+        // create the vertex offset array
+        for (var i = 0; i < roid.vert; i++) {
+            roid.offs.push(Math.random() * ROIDS_JAG * 2 + 1 - ROIDS_JAG);    // populating the offs property in "function newAsteroid". "Math.random() * ROIDS_JAG * 2 + 1 - ROIDS_JAG" is an equation used to get an appropriate offset
+        }
+
+        return roid;
+    }
+
+    // function used to create a new game
+    function newGame() {
+        level = 0;  // setting the initial level to start at 0 (each new level makes the asteroids move around incrementally faster, and each new level increases the amount of asteroids in the level)
+        lives = GAME_LIVES; // initializing the "lives" parameter to equal our global constant GAME_LIVES (which is 3 lives)
+        currentScore = 0;   // initializing the currentScore of the player to 0 at the start of a new game
+        ship = newShip();   // creating a new "ship" javascript object
+        
+        // get the high score from local storage. this way, the high score will persist across different browser sessions (when the page is refreshed/when the page is closed and reopened)
+        var scoreString = localStorage.getItem(SAVE_KEY_SCORE); // retrieve the saved high score from the local storage using our constant global variable SAVE_KEY_SCORE. store that into "scoreString"
+        if (scoreString == null) {  // if no high score exists in the local storage (it returns NULL)...
+            highScore = 0; //...initialize the high score to 0
+        } else {    // otherwise, if a high score does exist...
+            highScore = parseInt(scoreString); // ...parse the retrived score as an integer and set it to be the high score
+        }
+
+        newLevel(); // calling a new level everytime 
+    }
+
+    // function used to create a new level
+    function newLevel() {
+        text = "Level " + (level + 1);  // text for the levels which starts at: "Level 1"
+        textAlpha = 1.0;    // textAlpha takes a number between 0 (transparent) and 1 (opaque)
+        createAsteroidBelt();   // creating the asteroid belt within each new level
+    }
+
+    // function used to create a new "ship"
+    function newShip() {
+        return {   
+            x: canv.width / 2,  // starting in the center
+            y: canv.height / 2, // starting in the center
+            r: SHIP_SIZE / 2,   // radius
+            a: 90 / 180 * Math.PI, // direction of the ship/where it is facing (angle). We want 90 degrees so that our ship faces upwards (90 degrees is pointing up on unit circle). We divide 90 by 180 and multiply by Pi to get this 90 degree in radians.
+            blinkTime: Math.ceil(SHIP_BLINK_DURATION * FPS),    // SHIP_BLINK_DURATION (0.1) * FPS (30) = 3 frames. So, every 3 frames the ship will blink on and off
+            blinkNumber: Math.ceil(SHIP_INVULNERABILITY_DURATION / SHIP_BLINK_DURATION),    // SHIP_INVULNERABILITY_DURATION (3) / SHIP_BLINK_DURATION (0.1) = 30 blinks. So, it'll be 15 blinks on, and 15 blinks off
+            canShoot: true, // decides whether the ship can currently shoot or not (initially set to true)
+            dead: false,    // setting the ship's dead property to false initially (so that the ship is not dead at the start of the game)
+            lasers: [], // keeping track of lasers (initially an empty array)
+            explodeTime: 0, // the duration of the explosion effect for the ship which is initially set to 0 (which means there are 0 frames left of exploding effect)
+            rot: 0, // ship rotation (initially 0)
+            thrusting: false,
+            thrust: {   // thrust magnitude which allows the ship to continue in the same direction (even if we rotate) for some time after releasing the thrust key
+                x: 0,
+                y: 0 
+            }
+        }
+    }
+
+    function shootLaser() {
+        // create the laser object
+        if (ship.canShoot && ship.lasers.length < LASER_MAX) {  // if the ship can shoot AND the length of the lasers array is less than the maximum number of lasers allowed on the screen at once, we can safely add a new laser
+            // add a new lasers to the lasers array
+            ship.lasers.push({
+                x: ship.x + (4 / 3) * ship.r * Math.cos(ship.a),    // Calculate the laser's starting x-position based on the ship's position and angle. horizontal of the ship's angle (cos). Multiplying by 4/3 because the centroid of a triangle is 2/3 from the tip. 
+                y: ship.y - (4 / 3) * ship.r * Math.sin(ship.a),    // Calculate the laser's starting y-position based on the ship's position and angle. vertical of the ship's angle (cos). Multiplying by 4/3 because the centroid of a triangle is 2/3 from the tip. 
+                xv: LASER_SPEED * Math.cos(ship.a) / FPS,   // Set the x-velocity of the laser, scaled by ship's angle and laser's speed (in pixels per second)
+                yv: -LASER_SPEED * Math.sin(ship.a) / FPS,  // Set the y-velocity of the laser, scaled by the ship's angle and laser's speed (in pixels per second)
+                dist: 0,    // setting a property that defines the distance traveled by the laser (initialized to 0)
+                explodeTime: 0  // the duration of the explosion effect/graphic for the laser which is initially set to 0
+            });
+            fxLaser.play(); // play the laser sound effect when the laser is shot
+        }
+        // prevent further shooting
+        ship.canShoot = false;
+    }
+
+    // constructor function used to create a Music object alternating high and low beats to make the music for the game
+    function Music(srcLow, srcHigh) {
+        // Initialize two audio objects for the high and low beat sounds
+        this.soundLow = new Audio(srcLow);  // sound for the low beat
+        this.soundHigh = new Audio(srcHigh);    // sound for the high beat
+        this.low = true;    // set the initial beat to low
+        this.tempo = 1.0;   // tempo of the music (in seconds per beat). as the game level progresses, the speed of the music will increase
+        this.beatTime = 0;  // counts the frames left until the next beat (initially set to 0)
+
+        this.play = function() {    // method used to play the current beat sound
+            if (MUSIC_ON) { // global flag that only allows mucis to play when the flag is set to true (which allows us to turn the music off if we want). so, if "MUSIC_ON" is true, then the music will play
+                if (this.low) { // if "this.low" is true...
+                    this.soundLow.play();   // ...play the low beat
+                } else {    // else, if "this.low" is false...
+                    this.soundHigh.play();  // ...play the high beat
+                }
+                this.low = !this.low;   // alternate between the low and high beats (by switching true to false, and false to true)
+            }
+        }
+        this.setAsteroidRatio = function(ratio) {    // method used to set the music tempo based on the ratio of remaining asteroids
+            this.tempo = 1.0 - 0.75 * (1.0 - ratio);    // calculating the starting tempo. we start with a base/start tempo of 1.0 (which is the slowest tempo). We subtract (0.75 * (1.0 - ratio)) from it to get the tempo as the ratio of the asteroids left to the total asteroids (asteroidsLeft/asteroidsTotal) gets smaller. As this ratio gets smaller, the ratio will eventually become 0 (when there are no asteroids left) which means that this value of (1.0 - ratio) will eventually become 1. We multiply this value (that will eventually become 1) by 0.75, so that the largest that this value of "0.75 * (1.0 - ratio)" can become is 0.75. We then subtract this 0.75 from 1 (1.0 - 0.75) = 0.25. Thus, in the end of the level (when there are no asteroids left), the smallest the value that the tempo can be is 0.25, which means that the fastest the tempo can reach is 0.25. We use the factor 0.75 so that the value of the tempo cannot drop below 0.25. This way, the value of the tempo cannot become too small (which would cause problems because it would make the tempo of the music much too fast where it would be playing hundreds of beats per second).
+        }
+        this.tick = function() {    // method used to handle the timing of each beat (which is called once per frame)
+            if (this.beatTime == 0) {   // when beatTime equals 0 (which means it has counted down to 0), it is time for the next beat
+                this.play();    // play the current beat
+                this.beatTime = Math.ceil(this.tempo * FPS);    // reset the beat time based on current tempo and FPS (in order to time the next beat). for example, if the current tempo equals 1, multiplied by the frame rate of 30, then we will have 30 ticks until the sound is played (which is 1 second)
+            } else {    // if the beat time does not equal 0...
+                this.beatTime--;    // ...decrement the beat time by one frame until it reaches 0
+            }
+        }
+    }
+
+    // constructor function used to a Sound object, which allows for multiple audio streams
+    function Sound(src, maxStreams = 1, vol = 1.0) {
+        this.streamNum = 0; // keeps track of the current audio stream to be played (intialized to audio stream 0)
+        this.streams = [];  // setting up an empty array to hold multiple audio stream objects for simultaneous or staggered playback
+        for (var i = 0; i < maxStreams; i++) {  // for loop used to fill the empty array that was created. it creates "maxStreams" number of audio objects, each initialized with the "src" file (the location of the audio file in the directory it is in) and the volume level
+            this.streams.push(new Audio(src));  // add a new audio object with the "src" file (the location of the audio file in the directory it is in) to the array for every iteration of the for loop
+            this.streams[i].volume = vol;   // set the volume level for each a audio stream object added
+        }
+        this.play = function() {    // method used to play the sounds, which cycles through the available audio streams manage the overlapping sounds
+            if (SOUND_EFFECTS_ON) { // global flag that only allows sound when the flag is set to true (which allows us to turn the sound off if we want). so, if "SOUND_EFFECTS_ON" is true, then the sound effects will play
+                this.streamNum = (this.streamNum + 1) % maxStreams; // move to the next stream, wrapping around if it exceeds the maximum number of streams (maxStreams). it works by using a modulus operator to cycle through the audio streams. "this.streamNum + 1" increases the streamNum by 1 each time this line is executed, moving to the next audio stream in the stream array. then, by using "% maxStreams" the code ensures that "streamNum" wraps back around to 0 once it reaches the value of maxStreams. Ex: if maxStreams = 3, streamNum will cycle through 0, 1 and 2. Once streamNum becomes equal to maxStreams (which is 3), 3 % 3 will reset streamNum back to 0, and the cycle can start over again
+                this.streams[this.streamNum].play();    // play the current audio stream in the rotation
+            }
+        }
+        this.stop = function() {    // method used to stop sounds/effects that are playing
+            this.streams[this.streamNum].pause();   // calling the built-in pause() function in order to pause (which stops) the sound
+            this.streams[this.streamNum].currentTime = 0;   // because the sound is paused, reset it back to the start of the stream by setting the current time of the stream back to 0. this line basically sets the playback position of the current audio stream to the beginning (0 seconds) so that when the sound plays again (from some action/event that happens in the game), the sound will play from the beginning
+        }
+    }
+
+    function update() {
+        var blinkOn = ship.blinkNumber % 2 == 0;    // declaring a variable "blinkOn" and assigning it to true if "ship.blinkNumber" is even, false if it is odd. So, the ship will "blink on" when the number is even, and "blink off" when the number is odd
+        var exploding = ship.explodeTime > 0;   // declaring a variable "exploding" and assigning it to an explodeTime greater than 0 (so if the explodeTime is greater than 0, then the ship is exploding)
+
+        // tick the music
+        music.tick();   // call the tick method on the music object (which is responsible for managing the timing of the beat playback). basically, it creates the music by creating a rhythmic, alternating sound pattern based on the defined tempo
+
+        // draw the background (space)
+        ctx.fillStyle = "black"; // making the background black
+        ctx.fillRect(0, 0, canv.width, canv.height); // drawing a filled rectangle with origin at 0, height of the canvas, and width of the canvas
+
+        // draw the asteroids
+        var x, y, r, a, vert, offs;
+        for (var i = 0; i < roids.length; i++) {    // using for loop to draw all the asteroids
+            ctx.strokeStyle = "slategrey";  // setting the color of the asteroids
+            ctx.lineWidth = SHIP_SIZE / 20;
+
+            // get the asteroid properties
+            x = roids[i].x;
+            y = roids[i].y;
+            r = roids[i].r;
+            a = roids[i].a;
+            vert = roids[i].vert;
+            offs = roids[i].offs;
+
+            // draw a path
+            ctx.beginPath();    // used to start drawing a new path
+            ctx.moveTo(
+                x + r * offs[0] * Math.cos(a),    // initial x point is the x location (center of asteroid), plus the radius, multiplied by the first element in the offset array, multiplied by the cos of the angle
+                y + r * offs[0] * Math.sin(a)     // inital y point is the y location, plus the radius, multiplied by the first element in the offset array, multiplied by the sin of the angle
+            );
+
+            // draw the polygon
+            for (var j = 1; j < vert; j++) {    // looping over the number of vertices
+                ctx.lineTo(  // drawing a line to each corner of the polygon
+                    x + r * offs[j] * Math.cos(a + j * Math.PI * 2 / vert),   //  modifying x based on the vertex that we are currently at by "adding j", multipling by 360 degrees (Math.PI * 2), and dividing by the number of vertices. offs[j] adds jaggedness to the asteroids
+                    y + r * offs[j] * Math.sin(a + j * Math.PI * 2 / vert)    // doing same for y
+                );
+            }
+            ctx.closePath();    // closing the path
+            ctx.stroke();   // finally, drawing it
+
+            // used during development during collision detection testing. representing the bounding around the asteroids for collision detection (circles used for each of the bounds). x, y, and r are already declared in the asteroid properties above
+            if (SHOW_BOUNDING) {
+                ctx.strokeStyle = "lime";   // specifies the color of the (circle) outline bounds
+                ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+                ctx.arc(x, y, r, 0, Math.PI * 2, false); // creates a complete circle around each of the asteroids' using the asteroids' coordinates (x and y), the radius of the asteroids (r) that defines how large the circle will be, the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+                ctx.stroke();   // this effectively draws the outline of the circle at each of the asteroids' positions (it actually draws the current path to the canvas using the previous line which defines the path of the circle)
+            }
+        }
+
+        // thrust the ship
+        if (ship.thrusting && !ship.dead) {   // when ship is thrusting AND the ship is not dead (the game is not over)
+            ship.thrust.x += SHIP_THRUST * Math.cos(ship.a) / FPS;    // adding SHIP_THRUST so that in the first second it goes 5 pixels, in the 2nd second it goes 10 pixels, and so on. Also multiplying by the cos of the ship's angle because we are using the x component. Also, dividing by FPS to account for the frame rate.
+            ship.thrust.y -= SHIP_THRUST * Math.sin(ship.a) / FPS;    // subtracting SHIP_THRUST for the y component. Also multiplying by the sin of the ship's angle because we are using the y component. Also, dividing by FPS to account for the frame rate.
+            fxThrust.play();    // play the thrust sound effect when the thrusters of the ship are activated (the ship is moving) using the play method we created
+
+            // if not exploding and blinkOn (which means the thruster should only be drawn when the ship has its blink status on), draw the thruster flames
+            if (!exploding && blinkOn) {
+                ctx.fillStyle = "red";  // interior color of the thruster flames
+                ctx.strokeStyle = "yellow";  // making the outline of the thruster flames yellow
+                ctx.lineWidth = SHIP_SIZE / 10; // width of the outline of the thrusters
+                ctx.beginPath();
+                ctx.moveTo( // rear left of the ship
+                    ship.x - ship.r * (2 / 3 * Math.cos(ship.a) + 0.5 * Math.sin(ship.a)), 
+                    ship.y + ship.r * (2 / 3 * Math.sin(ship.a) - 0.5 * Math.cos(ship.a))
+                );
+                ctx.lineTo( // draw line right to the rear center behind the ship
+                    ship.x - ship.r * 6 / 3 * Math.cos(ship.a), // using 6/3 for twice the length of the ship (behind it)
+                    ship.y + ship.r * 6 / 3 * Math.sin(ship.a)  // using 6/3 for twice the length of the ship (behind it)
+                );
+                ctx.lineTo( // draw line right to the rear right of the ship.
+                    ship.x - ship.r * (2 / 3 * Math.cos(ship.a) - 0.5 * Math.sin(ship.a)), 
+                    ship.y + ship.r * (2 / 3 * Math.sin(ship.a) + 0.5 * Math.cos(ship.a))  
+                );
+                ctx.closePath();  
+                ctx.fill();  
+                ctx.stroke();
+            }
+
+        } else {    // when the ship is not thrusting (the up arrow key is not being pushed), the friction takes hold
+            ship.thrust.x -= FRICTION * ship.thrust.x / FPS;    // frictional component is applied at every frame to slowly slow down the ship
+            ship.thrust.y -= FRICTION * ship.thrust.y / FPS;    // frictional component is applied at every frame to slowly slow down the ship
+            fxThrust.stop();    // stopping the thruster sound of the ship when the player releases the keys that thrust the ship (move the ship) using the stop() method we created
+        }
+
+        // if not exploding, draw the triangular ship
+        if (!exploding) {
+            if (blinkOn && !ship.dead) {  // if blink is on AND ship is not dead, we draw the ship (so when the blink is off while it's intermittently blinking, the ship will disappear for a very short amount of time until it blinks on again)
+                drawShip(ship.x, ship.y, ship.a);   // call the draw ship function with the arguments of the x and y locations of the ship (ship.x, ship.y), and the ship's angle (ship.a)
+            }
+            // handle blinking
+            if (ship.blinkNumber > 0) { // if the blinkNumber is greater than 0, the ship should continue blinking on and off
+                ship.blinkTime--;   // decrement the blink time
+
+                // check if the blink timer has reached 0 to toggle the next blink
+                if (ship.blinkTime == 0) {  // if the blink timer decrements down and reaches 0, it is time to start a new blink cycle
+                    ship.blinkTime = Math.ceil(SHIP_BLINK_DURATION * FPS);  // reset the blink time to the full duration it was initialized at (SHIP_BLINK_DURATION (0.1) * FPS (30) = 3 frames. So, every 3 frames the ship will blink on and off)
+                    ship.blinkNumber--; // decrement the total number of blinks left, moving closer to stopping the blink effect
+                }
+            }
+        } else {    // if exploding, draw the explosion of the ship. to do this, we draw 4 circles with different colors that decrease in size as they continue to be drawn
+            ctx.fillStyle = "darkred";   // specifies the color of the (circle) fill to "darkred" 
+            ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+            ctx.arc(ship.x, ship.y, ship.r * 1.7, 0, Math.PI * 2, false); // creates a complete circle around the ship using the ship coordinates (x and y), the radius of the ship (r * 1.7) that defines how large the circle will be (it will be a 1.7 times the radius of the ship), the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+            ctx.fill(); // this fills the circle at the ship's position
+
+            ctx.fillStyle = "red";   // specifies the color of the (circle) fill to "red" 
+            ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+            ctx.arc(ship.x, ship.y, ship.r * 1.4, 0, Math.PI * 2, false); // creates a complete circle around the ship using the ship coordinates (x and y), the radius of the ship (r * 1.4) that defines how large the circle will be (it will be a 1.4 times the radius of the ship), the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+            ctx.fill(); // this fills the circle at the ship's position
+
+            ctx.fillStyle = "orange";   // specifies the color of the (circle) fill to "orange" 
+            ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+            ctx.arc(ship.x, ship.y, ship.r * 1.1, 0, Math.PI * 2, false); // creates a complete circle around the ship using the ship coordinates (x and y), the radius of the ship (r * 1.1) that defines how large the circle will be (it will be a 1.1 times the radius of the ship), the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+            ctx.fill(); // this fills the circle at the ship's position
+
+            ctx.fillStyle = "yellow";   // specifies the color of the (circle) fill to "yellow" 
+            ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+            ctx.arc(ship.x, ship.y, ship.r * 0.8, 0, Math.PI * 2, false); // creates a complete circle around the ship using the ship coordinates (x and y), the radius of the ship (r * 0.8) that defines how large the circle will be (it will be a 0.8 times the radius of the ship), the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+            ctx.fill(); // this fills the circle at the ship's position
+
+            ctx.fillStyle = "white";   // specifies the color of the (circle) fill to "white" 
+            ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+            ctx.arc(ship.x, ship.y, ship.r * 0.5, 0, Math.PI * 2, false); // creates a complete circle around the ship using the ship coordinates (x and y), the radius of the ship (r * 0.5) that defines how large the circle will be (it will be a 0.5 times the radius of the ship), the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+            ctx.fill(); // this fills the circle at the ship's position
+        }
+
+        // used during development for collision detection testing. representing the bounding around the ship for collision detection (a circle is used for the bound)
+        if (SHOW_BOUNDING) {
+            ctx.strokeStyle = "lime";   // specifies the color of the (circle) outline bounds
+            ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+            ctx.arc(ship.x, ship.y, ship.r, 0, Math.PI * 2, false); // creates a complete circle around the ship using the ship coordinates (x and y), the radius of the ship (r) that defines how large the circle will be, the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+            ctx.stroke();   // this effectively draws the outline of the circle at the ship's position (it actually draws the current path to the canvas using the previous line which defines the path of the circle)
+        }
+
+        // center dot in the ship
+        if (SHOW_CENTER_DOT) {
+            ctx.fillStyle = "red";
+            ctx.fillRect(ship.x - 1, ship.y - 1, 2, 2);
+        }
+
+        // draw the lasers
+        for (var i = 0; i < ship.lasers.length; i++) {
+            if (ship.lasers[i].explodeTime == 0) {  // if the laser is not exploding...
+                ctx.fillStyle = "salmon";   // specifies the color that will fill the inside of the laser
+                ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+                ctx.arc(ship.lasers[i].x, ship.lasers[i].y, SHIP_SIZE / 15, 0, Math.PI * 2, false); // creates a complete circular shape representing the laser, with the x and y coordinates of the ith laser (the center point of the circle representing the laser), the radius of the circle for the laser (SHIP_SIZE / 15) that defines how large the circle will be, the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+                ctx.fill(); // effectively filling the inside of the circle
+            } else {
+                // draw the explosion of the laser
+                ctx.fillStyle = "orangered";   // specifies the color that will fill the inside of the laser
+                ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+                ctx.arc(ship.lasers[i].x, ship.lasers[i].y, ship.r * 0.75, 0, Math.PI * 2, false); // creates a complete circular shape representing the laser explosion, with the x and y coordinates of the ith laser (the center point of the circle representing the laser), the radius of the circle for the laser (ship.r * 0.75) that defines how large the circle will be, the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+                ctx.fill(); // effectively filling the inside of the circle
+                ctx.fillStyle = "salmon";   // specifies the color that will fill the inside of the laser
+                ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+                ctx.arc(ship.lasers[i].x, ship.lasers[i].y, ship.r * 0.5, 0, Math.PI * 2, false); // creates a complete circular shape representing the laser explosion, with the x and y coordinates of the ith laser (the center point of the circle representing the laser), the radius of the circle for the laser (ship.r * 0.5) that defines how large the circle will be, the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+                ctx.fill(); // effectively filling the inside of the circle
+                ctx.fillStyle = "pink";   // specifies the color that will fill the inside of the laser
+                ctx.beginPath();    // starting a new path for drawing/resets the path to begin fresh, without affecting any previously drawn shapes
+                ctx.arc(ship.lasers[i].x, ship.lasers[i].y, ship.r * 0.25, 0, Math.PI * 2, false); // creates a complete circular shape representing the laser explosion, with the x and y coordinates of the ith laser (the center point of the circle representing the laser), the radius of the circle for the laser (ship.r * 0.25) that defines how large the circle will be, the starting angle of the arc (0), the ending angle of the arc (Math.PI * 2 = 360 degrees), and the direction in which the arc is drawn (false sets it to drawn in counterclockwise direction)
+                ctx.fill(); // effectively filling the inside of the circle
+            }
+        }
+
+        // draw the game text
+        if (textAlpha >= 0) {   // if the text is not transparent
+            ctx.textAlign = "center";   // align the text so that it is in the center
+            ctx.textBaseline = "middle";    // align the text vertically as well
+            ctx.fillStyle = "rgba(255, 255, 255, " + textAlpha + ")";   // give the text the color of white (using 255, 255, 255), and set the textAlpha component to that text
+            ctx.font = "small-caps " + TEXT_SIZE + "px dejavu sans mono";    // set the text font style (small-caps), the size of the font (in pixels or px), and the type of font (dejavu sans mono)
+            ctx.fillText(text, canv.width / 2, canv.height * 0.75); // draw the text using the text string (text), the x-component position of the text which is halfway across the screen (canv.width / 2), and the y-component position of the text which is three-quarters of the way down the screen (canv.height * 0.75)
+            textAlpha -= (1.0 / TEXT_FADE_TIME / FPS);  // decrement the textAlpha so that the text slowly fades out. it starts at 1.0 which we divide by the "fade time" duration, and then divide by FPS (to take the frame rate into account)
+        } else if (ship.dead) { // when the text disappears and the ship is dead (out of lives)...
+            newGame();  // ...we will start a new game for the player
+        }
+
+        // draw the remaining lives as small ships in the upper-left corner of the screen
+        var lifeColor;  // used to set the color for each of the life icons (the small ships in the upper-left corner of the screen)
+        for (var i = 0; i < lives; i++) {   // use a for-loop to draw a small ship for each iteration of the for-loop (based on the number of lives the player has)
+            lifeColor = exploding && i == lives - 1 ? "red" : "white";  // if the ship is currently exploding (exploding) AND the loop is on the last life icon in the current iteration (i = lives - 1) which means we are specifying the life icon that the player is losing, set "lifeColor" to red to visually indicate the explosion on the last life, else set "lifeColor" to white to the regular life icons
+            drawShip(SHIP_SIZE + i * SHIP_SIZE * 1.2, SHIP_SIZE, 0.5 * Math.PI, lifeColor);    // call drawShip() for each life. the x position is offset for each life by "SHIP_SIZE * 1.2" to space the ship lives out horizontally. the y position is set to SHIP_SIZE to position them vertically near the top. the angle is set to "0.5 * PI" (90 degrees in radians) so that each ship (life) points upwards
+        }
+
+        // draw the score in the upper-right corner of the screen
+        ctx.textAlign = "right";   // align the text so that it is on the right of the screen
+        ctx.textBaseline = "middle";    // align the text vertically as well
+        ctx.fillStyle = "white";   // give the text the color of white
+        ctx.font = TEXT_SIZE + "px dejavu sans mono";    // set the size of the font (in pixels or px), and the type of font (dejavu sans mono)
+        ctx.fillText(currentScore, canv.width - SHIP_SIZE / 2, SHIP_SIZE); // draw the text using the text string (currentScore), the x-component position of the text which is near the right edge of the canvas offset by half of the size of the ship for spacing (canv-width - SHIP_SIZE / 2), and the y-component position of the text which positions it vertically near the top of the screen with an offset of SHIP_SIZE
+
+        // draw the high score in the upper-center of the screen
+        ctx.textAlign = "center";   // align the text so that it is in the center of the screen
+        ctx.textBaseline = "middle";    // align the text vertically as well
+        ctx.fillStyle = "white";   // give the text the color of white
+        ctx.font = (TEXT_SIZE * 0.6) + "px dejavu sans mono";    // set the size of the font (in pixels or px) multiplied by 0.75 so the font is not as large, and the type of font (dejavu sans mono)
+        ctx.fillText("HIGH SCORE - " + highScore, canv.width / 2, SHIP_SIZE); // draw the text using the text string (highScore), the x-component position of the text will be the middle of the screen (canv-width / 2), and the y-component will be SHIP_SIZE
+
+        // detect when the lasers hit the asteroids
+        var ax, ay, ar, lx, ly;
+        for (var i = roids.length - 1; i >= 0; i--) {
+            // grab the asteroid properties
+            ax = roids[i].x;
+            ay = roids[i].y;
+            ar = roids[i].r;
+
+            // loop over the lasers
+            for (var j = ship.lasers.length - 1; j >= 0; j--) {
+                // grab the laser properties
+                lx = ship.lasers[j].x;
+                ly = ship.lasers[j].y;
+
+                // detect the hits
+                if (ship.lasers[j].explodeTime == 0 && distBetweenPoints(ax, ay, lx, ly) < ar) {  // if explodeTime equals 0 (which means we are not exploding), AND the distance between the asteroids and the lasers is less than the asteroid's radius
+
+                    // destroy the asteroid and activate the laser explosion
+                    destroyAsteroid(i); // calling destroyAsteroid() to split an asteroid into multiple parts when the laser hits the asteroid
+                    ship.lasers[j].explodeTime = Math.ceil(LASER_EXPLODE_DURATION * FPS);   // setting explodeTime for the laser to indicate that it is in an exploding state, calculated based on the duration of the explosion and the frame rate
+                    break;  // after we have detected a laser hitting an asteroid (and the asteroid has been destroyed), we can break the for loop because we do not need to continue to iterate through the array
+                }
+            }
+        }
+
+        // if not exploding, check for asteroid collisions
+        if (!exploding) {
+            if (ship.blinkNumber == 0 && !ship.dead) {    // if the ship's blinkNumber (the amount of blinks the ship has left) equals 0 AND the ship is not dead, we handle collisions. if the blinkNumber does not equal 0, we ignore collisions (which makes the ship invulnerable at the start of the game while it is blinking)
+                for (var i = 0; i < roids.length; i++) {
+                    if (distBetweenPoints(ship.x, ship.y, roids[i].x, roids[i].y) < ship.r + roids[i].r) {  // if the distance between the individual asteroid and the ship is less than the ship's radius plus the asteroid's radius (that means the circle bounds have overlapped/the circle boundary of the ship has touched the circle boundary of one of the asteroids)
+                        explodeShip();  // call the function explodeShip() to explode the ship because it has crashed into one of the asteroids
+                        destroyAsteroid(i); // call the function destroyAsteroid() to destroy the asteroid because it has crashed into the ship
+                        break;  // must be called so that once our ship has exploded, it does not continue to destroy more asteroids (if this "break" call is not implemented, it is possible for the ship to destroy more than one asteroid when it crashes into it)
+                    }
+                }
+            }
+
+            // if not exploding, we are able to rotate the ship
+            ship.a += ship.rot;
+
+            // if not exploding, we are able to move the ship
+            ship.x += ship.thrust.x;
+            ship.y += ship.thrust.y;
+        } else {    // if the ship is exploding...
+            ship.explodeTime--; // we decrement the amount of time left on the explosion
+
+            // reset the ship after the ship has exploded
+            if (ship.explodeTime == 0) {    // if the explodeTime == 0, we should end the explosion...
+                lives--;    // we decrement the amount of lives that the player has left after their ship explodes
+                if (lives == 0) {   // checking if the number of lives the player has left is equal to 0...
+                    gameOver(); // if the number of lives the player has left is equal to 0, call the function gameOver() which indicates that the game is over (the player has lost because they ran out of lives)
+                } else {
+                    ship = newShip();   // if the number of lives the player has left is not equal to 0 (which means they have more lives), create a "new ship" so that the player can go onto their next life after they die (when their ship explodes)
+                }
+            }
+        }
+
+        // handle the edge of screen
+        if (ship.x < 0 - ship.r) {  // x component
+            ship.x = canv.width + ship.r;
+        } else if (ship.x > canv.width + ship.r) {
+            ship.x = 0 - ship.r
+        }
+        if (ship.y < 0 - ship.r) {  // y component
+            ship.y = canv.height + ship.r;
+        } else if (ship.y > canv.height + ship.r) {
+            ship.y = 0 - ship.r
+        }
+
+        // move the lasers
+        for (var i = ship.lasers.length - 1; i >= 0; i--) { // looping backwards through the lasers array. we are looping backwards because when the splice() command is used to remove 1 of the lasers (shown below), it changes the array's length and shifts elements to the left. so, by going in reverse order, we can avoid skipping elements or encountering out-of-bounds errors as elements are removed
+            
+            // check distance traveled
+            if (ship.lasers[i].dist > LASER_DISTANCE * canv.width) {    // if the total distance of the laser is greater than the maximum allowed distance (LASER_DISTANCE * canv_width) (which is scaled relative to the size of the game canvas)
+                // the laser has gone far enough, so want to delete the laser (so that it doesn't keep shooting endlessly around the screen)
+                ship.lasers.splice(i, 1);   // using splice() to remove 1 element (1 laser) from the array at index "i" when the laser exceeds its maximum travel distance
+                continue;   // we use "continue" to skip the rest of the code in the current loop iteration. we need to skip the rest of the code because once a laser is removed, there is no reason to update its position, calculate its distance, or handle screen wrapping
+            }
+
+            // handle the explosion 
+            if (ship.lasers[i].explodeTime > 0) {   // if the laser is currently exploding...
+                ship.lasers[i].explodeTime--;   // ...decrement the explodeTime
+
+                // destroy the laser after the duration is up
+                if (ship.lasers[i].explodeTime == 0) {  // if the laser is not exploding (which means the duration of the explosion effect has elapsed)
+                    ship.lasers.splice(i, 1);   // remove/delete the ith laser from the array
+                    continue;   // preventing the remaining code in the iteration from occurring, and jumping back to the for loop for the next iteration
+                }
+
+            } else {    // if the is not exploding...
+                // make the lasers move
+                ship.lasers[i].x += ship.lasers[i].xv;  // velocity in the x direction
+                ship.lasers[i].y += ship.lasers[i].yv;  // velocity in the y direction
+
+                // calculate the distance traveled
+                ship.lasers[i].dist += Math.sqrt(Math.pow(ship.lasers[i].xv, 2) + Math.pow(ship.lasers[i].yv, 2));  // taking the square root of the squared x and y components of the laser's velocity to get the actual distance traveled by the laser in one frame. each frame this value is added to the laser distance which, at the end, accumulates the total distance the laser has traveled since it was fired
+            }
+
+            // handle edge of screen for the lasers
+            if (ship.lasers[i].x < 0) { // check if the laser has moved off the left edge of the screen
+                ship.lasers[i].x = canv.width;  // if so, wrap the laser around to the right edge of the screen
+            } else if (ship.lasers[i].x > canv.width) { // if the laser has moved off the right edge of the screen
+                ship.lasers[i].x = 0;   // wrap it around to the left edge of the screen
+            }
+
+            if (ship.lasers[i].y < 0) { // check if the laser has moved off the top edge of the screen
+                ship.lasers[i].y = canv.height; // if so, wrap it around to the bottom edge of the screen
+            } else if (ship.lasers[i].y > canv.height) {    // if the laser has moved off the bottom edge of the screen
+                ship.lasers[i].y = 0;   // wrap it around to the top edge of the screen
+            }
+        }
+
+        // move the asteroids
+        for (var i = 0; i < roids.length; i++) {
+            roids[i].x += roids[i].xv;  // velocity in the x direction
+            roids[i].y += roids[i].yv;  // velocity in the y direction
+
+            // handle edge of screen for x-coordinate
+            if (roids[i].x < 0 - roids[i].r) {  // if the asteroid moves off the left side of the screen (its x-coordinate is less than 0 minus its radius)
+                roids[i].x = canv.width + roids[i].r;   // wrap it around to the right side of the screen (set its x-coordinate to the width of the canvas plus its radius)
+            } else if (roids[i].x > canv.width + roids[i].r) {  // if the asteroid moves off the right side of the screen (its x-coordinate is greater than the width of the canvas plus its radius)
+                roids[i].x = 0 - roids[i].r;    // wrap it around to the left side of the screen (set its x-coordinate to 0 minus its radius)
+            }
+            // handle edge of screen for y-coordinate
+            if (roids[i].y < 0 - roids[i].r) {  // if the asteroid moves off the top of the screen (its y-coordinate is less than 0 minus its radius)
+                roids[i].y = canv.height + roids[i].r;  // wrap it around to the bottom of the screen (set its y-coordinate to the height of the canvas plus its radius)
+            } else if (roids[i].y > canv.height + roids[i].r) { // if the asteroid moves off the bottom of the screen (its y-coordinate is greater than the height of the canvas plus its radius)
+                roids[i].y = 0 - roids[i].r;    // wrap it around to the top of the screen (set its y-coordinate to 0 minus its radius)
+            }
+        }
+    } 
+</script>
+</body>
+
+</html>
